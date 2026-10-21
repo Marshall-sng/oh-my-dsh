@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "oh-my-dsh",
+    "description": "DeepSeek Harness 多智能体套件：Orchestrator 负责规划与委派，Explorer 与 Fixer 两个专家预设通过 subagent 机制协作完成侦察与实现。"
+  }
+}

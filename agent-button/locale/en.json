@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "oh-my-dsh Agent button",
+    "description": "Independent frontend button that lists the omo agent roster and switches the session's agent seat."
+  }
+}

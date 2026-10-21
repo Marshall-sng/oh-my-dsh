@@ -1,0 +1,52 @@
+# oh-my-dsh profile layer: the omo seat plane for DeepSeek Harness.
+#
+# Since D-3 the omo seats are NOT agent presets: they live in the bundle's own
+# seat table (dispatch/seats.json + <DSH_HOME>/omo/presets.json), are dispatched
+# by the omo_dispatch tool, and are applied to a session by the seat runtime.
+# Nothing here is registered into the Host's agent-preset registry, so the
+# official preset picker keeps showing only its own four modes.
+#
+# Install: plugin_manager install_bundle <this directory>
+# Rollback: disable or remove this bundle; the shipped presets are untouched.
+
+# 放行 subagent 的精确模型路由（Host 偏好默认 enabled:false，导致工具 schema
+# 不暴露 provider/model，编排层无法按模型派工）。覆盖 base 行的 config
+# （整体替换）；四条路由均为本 profile 已注册的 provider。
+# 多个模型共存是 council 机制的前提：议员必须分属不同模型，同模型两票不算议事。
+- id: subagent-model-selection-settings
+  name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+  config:
+    enabled: true
+    allowedModels:
+      - provider: minimax-cn
+        model: MiniMax-M3.1-Flash
+      - provider: minimax-cn
+        model: MiniMax-M3
+      - provider: minimax-cn
+        model: MiniMax-M2.7
+      - provider: stepplan
+        model: step-5-preview
+
+- insert:
+    # -----------------------------------------------------------------------
+    # Host-plane plugin rows.
+    #
+    # `command-preset` registers the `/preset` command in the UI command plane:
+    # it lists the omo seat roster and switches the current session's seat
+    # through the Host's agent-preset path (the seat runtime then applies the
+    # omo layer).
+    #
+    # `omo-dispatch` owns the seat plane: the seat table, the `omo_dispatch`
+    # tool (dispatch a lane per seat), the `omoSeats` session projection the
+    # Agent button reads, and the seat runtime that applies a seat to a session.
+    #
+    # `omo-model-settings` serves the seat dispatch-default model preferences
+    # to the human GUI over the `omoSeatModels` Remote (registered manually
+    # through ctx.typert — hand-written wire schemas, no loader config).
+    # -----------------------------------------------------------------------
+    - id: command-preset
+      name: './command-preset/lib/index.js'
+    - id: omo-dispatch
+      name: './dispatch/lib/index.js'
+    - id: omo-model-settings
+      name: './model-settings/lib/index.js'

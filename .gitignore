@@ -1,0 +1,18 @@
+# ── local-only material (not published) ───────────────────────────────────
+# Internal work logs, verification evidence and session-derived notes. They
+# carry machine-local paths and are kept out of the public repository.
+docs/
+
+# Local profile patches and the P0 webhook test harness: development
+# scaffolding around the bundle, not part of it.
+patch/
+webhook-trigger/
+
+# ── generated / transient ─────────────────────────────────────────────────
+node_modules/
+*.bak-*
+*.tmp
+.repair-tmp
+.rollback-tmp
+.DS_Store
+Thumbs.db

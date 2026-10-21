@@ -1,0 +1,8 @@
+# oh-my-dsh Agent 按钮：独立前端控件（薄层客户端插件）。
+# 注册到新会话行（conversation.hero.options）与 composer 工具行
+# （conversation.input.left），与官方预设选择器并存，不共用入口。
+# 官方机制零修改；回滚 = 禁用/移除本 bundle，官方 UI 原样恢复。
+
+- insert:
+    - id: oh-my-dsh-agent-button
+      name: 'oh-my-dsh-agent-button'

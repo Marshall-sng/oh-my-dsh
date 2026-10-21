@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "oh-my-dsh",
+    "description": "Multi-agent suite for DeepSeek Harness: an Orchestrator plans and delegates to Explorer and Fixer specialists over the subagent seam."
+  }
+}

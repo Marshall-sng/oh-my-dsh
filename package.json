@@ -1,0 +1,44 @@
+{
+  "name": "oh-my-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A multi-agent suite for DeepSeek Harness inspired by oh-my-opencode-slim: an Orchestrator plans and delegates to Explorer and Fixer specialist presets over the subagent seam.",
+  "icon": "./icon.svg",
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./typert": "./model-settings/lib/typert.host.js",
+    "./remote": "./model-settings/lib/typert.client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "locale/*.json",
+    "skills/**",
+    "command-preset/**",
+    "user-presets/**",
+    "dispatch/**",
+    "model-settings/**",
+    "examples/**",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-atomic-write": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "zod": "*"
+  },
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  }
+}
