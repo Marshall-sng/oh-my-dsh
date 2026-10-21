@@ -1,0 +1,25 @@
+# NOTICE
+
+oh-my-dsh is a derivative work adapted from **oh-my-opencode-slim**:
+
+- Project: oh-my-opencode-slim ("omo-slim")
+- Source: https://github.com/alvinunreal/oh-my-opencode-slim
+- Author: Boring Dystopia Development (alvinunreal)
+- License: MIT (Copyright (c) 2025)
+
+The following elements are ported or adapted from that project:
+
+- the seat roster and personas (orchestrator, explorer, fixer, oracle, designer,
+  council, councillor, observer);
+- the routing philosophy and orchestration model (plan → dispatch specialists →
+  reconcile);
+- the twelve skills under `skills/`;
+- the multi-model council protocol.
+
+The DeepSeek Harness integration in this repository is original work written for
+this bundle: the seat table and seat runtime, tool-policy enforcement
+(`tools.restrict()` + execution-time `tools.guard()`), the `omo_dispatch` tool,
+the `omoSeats` / `omoSeatModels` surfaces, the per-seat model-preference file
+and its atomic compare-and-swap writer, and the Agent chip client UI.
+
+The MIT license text governing both parties is in [LICENSE](LICENSE).
