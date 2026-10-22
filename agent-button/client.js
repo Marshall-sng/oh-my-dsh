@@ -84,7 +84,16 @@ window.__ModuleLoader__.load({
         modelLabel: '模型',
         providerPlaceholder: '例如 minimax-cn',
         modelPlaceholder: '例如 MiniMax-M3.1-Flash',
-        catalogHint: '点选填入，也可直接手填：',
+        modeCatalog: '从目录选择',
+        modeManual: '手动输入',
+        chooseProvider: '请选择 provider',
+        chooseModel: '请选择模型',
+        catalogNote: '目录来自当前宿主；未列出的路由可切到「手动输入」。',
+        catalogEmpty: '当前宿主没有已注册的 provider',
+        unregisteredSuffix: '（未注册）',
+        unlistedSuffix: '（目录未列出）',
+        catalogFailureSuffix: '（目录获取失败）',
+        officialBlockedSuffix: ' · 官方工具未放行',
         routeRequired: '请填写完整的 provider 与 model（两者必须成对）',
         save: '保存',
         cancel: '取消',
@@ -126,7 +135,16 @@ window.__ModuleLoader__.load({
         modelLabel: 'Model',
         providerPlaceholder: 'e.g. minimax-cn',
         modelPlaceholder: 'e.g. MiniMax-M3.1-Flash',
-        catalogHint: 'Click to fill, or type by hand:',
+        modeCatalog: 'Pick from catalog',
+        modeManual: 'Type manually',
+        chooseProvider: 'Choose a provider',
+        chooseModel: 'Choose a model',
+        catalogNote: 'Catalog from the current host; unlisted routes can be typed manually.',
+        catalogEmpty: 'This host has no registered providers',
+        unregisteredSuffix: ' (not registered)',
+        unlistedSuffix: ' (not in catalog)',
+        catalogFailureSuffix: ' (catalog failed)',
+        officialBlockedSuffix: ' · official tool blocked',
         routeRequired: 'provider and model must both be filled (they travel as a pair)',
         save: 'Save',
         cancel: 'Cancel',
@@ -210,13 +228,6 @@ window.__ModuleLoader__.load({
   font: inherit; font-size: 12px;
 }
 .omo-ab-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 0; }
-.omo-ab-chiproute {
-  margin: 0 4px 4px 0; padding: 2px 7px;
-  border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
-  background: transparent; color: var(--dsw-alias-label-secondary);
-  font: inherit; font-size: 11px; cursor: pointer;
-}
-.omo-ab-chiproute:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
 .omo-ab-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 6px 8px 2px; }
 .omo-ab-save {
   height: 26px; padding: 0 12px;
@@ -225,6 +236,19 @@ window.__ModuleLoader__.load({
   font: inherit; font-size: 12px; cursor: pointer;
 }
 .omo-ab-save:disabled { cursor: default; opacity: 0.5; }
+.omo-ab-modes { display: flex; gap: 6px; padding: 2px 8px 6px 26px; }
+.omo-ab-mode {
+  padding: 3px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px;
+  background: transparent; color: var(--dsw-alias-label-secondary);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+.omo-ab-mode[aria-pressed="true"] {
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-border-l2);
+}
+.omo-ab-mode:disabled { cursor: default; opacity: 0.4; }
+select.omo-ab-input { padding-right: 6px; cursor: pointer; }
+select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
 `;
 
     // ── shared store (chip ↔ popup live in different slots) ──────────────
@@ -313,6 +337,12 @@ window.__ModuleLoader__.load({
         const [saving, setSaving] = React.useState(false);
         const [choice, setChoice] = React.useState('default');
         const [route, setRoute] = React.useState({ provider: '', model: '' });
+        // How the "specify model" route is being edited: pick from the host's
+        // catalog, or type the pair by hand. Hand entry stays reachable because
+        // the override file is shared per DSH_HOME across profiles (a provider
+        // registered in another profile is not in this catalog) and because
+        // catalog membership is advisory, not the routable set.
+        const [routeMode, setRouteMode] = React.useState('catalog');
         const sessionIdRef = React.useRef(undefined);
         const generation = React.useRef(0);
 
@@ -457,6 +487,9 @@ window.__ModuleLoader__.load({
           setEditError('');
           setCatalog(null);
           setCatalogState('idle');
+          // Start from the catalog; a failed/empty catalog falls back to the
+          // hand-entry form inside the render (the mode is derived there).
+          setRouteMode('catalog');
           if (setting?.override === 'route' && setting.effectiveModel) {
             setChoice('specify');
             setRoute({ provider: setting.effectiveModel.provider, model: setting.effectiveModel.model });
@@ -547,15 +580,28 @@ window.__ModuleLoader__.load({
         const inOmo = Boolean(current) && roster.some((preset) => preset.id === current);
 
         // The model editor replaces the roster inside the same anchored
-        // panel: three mutually exclusive choices, then provider/model (picker
-        // suggestions or hand entry), then save/cancel. Saving never switches
-        // the current seat and never runs /preset.
+        // panel: three mutually exclusive choices, then a route edited either
+        // through the host's catalog (cascading selects) or by hand, then
+        // save/cancel. Saving never switches the current seat and never runs
+        // /preset.
         const editor = editing === null ? null : (() => {
           const setting = models[editing];
           const seatLabel = (roster.find((row) => row.id === editing)?.name) ?? (AGENTS[editing]?.name ?? editing);
           const definitionText = setting?.definitionModel
             ? `${setting.definitionModel.provider}/${setting.definitionModel.model}`
             : t('inheritLabel');
+          const catalogPending = catalogState === 'loading' || catalogState === 'idle';
+          const catalogReady = catalogState === 'ready' && catalog !== null;
+          const catalogAvailable = catalogReady && Array.isArray(catalog.providers) && catalog.providers.length > 0;
+          const catalogUnavailable = catalogState === 'failed' || (catalogReady && !catalogAvailable);
+          // A failed or empty catalog forces the hand-entry form; the reason
+          // stays visible instead of silently changing the controls.
+          const effectiveMode = catalogUnavailable ? 'manual' : routeMode;
+          const catalogReason = catalogState === 'failed'
+            ? t('catalogFailed')
+            : (catalogReady && !catalogAvailable ? t('catalogEmpty') : '');
+          const providerChoices = providerOptions(catalog, route.provider);
+          const modelChoices = modelOptions(catalog, route.provider, route.model);
           // A label wraps the radio and the text (a button may not contain an
           // input); clicking anywhere in the row selects the choice.
           const choiceRow = (id, title, desc) => h('label', {
@@ -568,44 +614,82 @@ window.__ModuleLoader__.load({
               h('span', { className: 'omo-ab-choicedesc' }, desc),
             ),
           );
-          const suggestions = catalog && Array.isArray(catalog.providers)
-            ? catalog.providers.flatMap((provider) => provider.models.map((model) => ({
-              key: `${provider.id}/${model.id}`,
-              provider: provider.id,
-              model: model.id,
-              title: `${provider.id}/${model.id}`,
-            })))
-            : [];
+          const onProviderChange = (value) => {
+            const provider = catalog?.providers?.find((row) => row !== null && row.id === value);
+            const models = Array.isArray(provider?.models) ? provider.models : [];
+            // One advertised model needs no second click; several leave the
+            // model unselected so the save validation names the missing half.
+            setRoute({ provider: value, model: models.length === 1 ? models[0].id : '' });
+          };
+          const modeButton = (mode, label, disabled) => h('button', {
+            key: mode,
+            type: 'button',
+            className: 'omo-ab-mode',
+            'aria-pressed': effectiveMode === mode,
+            disabled,
+            onClick: () => setRouteMode(mode),
+          }, label);
+          const catalogBody = h('div', { className: 'omo-ab-field' },
+            h('span', { className: 'omo-ab-choicedesc' }, t('providerLabel')),
+            h('select', {
+              className: 'omo-ab-input',
+              'aria-label': t('providerLabel'),
+              value: route.provider,
+              disabled: catalogPending,
+              onChange: (e) => onProviderChange(e.target.value),
+            },
+              h('option', { value: '', disabled: true }, t('chooseProvider')),
+              providerChoices.map((option) => h('option', {
+                key: option.value,
+                value: option.value,
+                title: option.title,
+              }, `${option.label}${option.synthetic ? t('unregisteredSuffix') : ''}${option.failure ? t('catalogFailureSuffix') : ''}`)),
+            ),
+            h('span', { className: 'omo-ab-choicedesc' }, t('modelLabel')),
+            h('select', {
+              className: 'omo-ab-input',
+              'aria-label': t('modelLabel'),
+              value: route.model,
+              disabled: catalogPending,
+              onChange: (e) => setRoute({ ...route, model: e.target.value }),
+            },
+              h('option', { value: '', disabled: true }, t('chooseModel')),
+              modelChoices.map((option) => h('option', {
+                key: option.value,
+                value: option.value,
+                title: option.title,
+              }, `${option.label}${option.synthetic ? t('unlistedSuffix') : ''}${option.officialBlocked ? t('officialBlockedSuffix') : ''}`)),
+            ),
+            h('span', { className: 'omo-ab-choicedesc' }, catalogPending ? t('catalogLoading') : t('catalogNote')),
+          );
+          const manualBody = h('div', { className: 'omo-ab-field' },
+            h('span', { className: 'omo-ab-choicedesc' }, t('providerLabel')),
+            h('input', {
+              className: 'omo-ab-input',
+              value: route.provider,
+              placeholder: t('providerPlaceholder'),
+              onChange: (e) => setRoute({ ...route, provider: e.target.value }),
+            }),
+            h('span', { className: 'omo-ab-choicedesc' }, t('modelLabel')),
+            h('input', {
+              className: 'omo-ab-input',
+              value: route.model,
+              placeholder: t('modelPlaceholder'),
+              onChange: (e) => setRoute({ ...route, model: e.target.value }),
+            }),
+            catalogReason !== '' && h('span', { className: 'omo-ab-choicedesc' }, catalogReason),
+          );
           return h('div', { className: 'omo-ab-popup', style: { position: 'fixed', zIndex: 61, ...position } },
             h('div', { className: 'omo-ab-title' }, `${seatLabel} · ${t('editTitle')}`),
             choiceRow('default', t('choiceDefault'), `${t('choiceDefaultDesc')}（${definitionText}）`),
             choiceRow('inherit', t('choiceInherit'), t('choiceInheritDesc')),
             choiceRow('specify', t('choiceSpecify'), t('choiceSpecifyDesc')),
-            choice === 'specify' && h('div', { className: 'omo-ab-field' },
-              h('span', { className: 'omo-ab-choicedesc' }, t('providerLabel')),
-              h('input', {
-                className: 'omo-ab-input',
-                value: route.provider,
-                placeholder: t('providerPlaceholder'),
-                onChange: (e) => setRoute({ ...route, provider: e.target.value }),
-              }),
-              h('span', { className: 'omo-ab-choicedesc' }, t('modelLabel')),
-              h('input', {
-                className: 'omo-ab-input',
-                value: route.model,
-                placeholder: t('modelPlaceholder'),
-                onChange: (e) => setRoute({ ...route, model: e.target.value }),
-              }),
-              h('span', { className: 'omo-ab-choicedesc' },
-                catalogState === 'loading' ? t('catalogLoading')
-                  : catalogState === 'failed' ? t('catalogFailed')
-                    : t('catalogHint')),
-              h('div', null, suggestions.map((suggestion) => h('button', {
-                key: suggestion.key,
-                type: 'button',
-                className: 'omo-ab-chiproute',
-                onClick: () => setRoute({ provider: suggestion.provider, model: suggestion.model }),
-              }, suggestion.title))),
+            choice === 'specify' && h('div', null,
+              h('div', { className: 'omo-ab-modes' },
+                modeButton('catalog', t('modeCatalog'), catalogUnavailable),
+                modeButton('manual', t('modeManual'), false),
+              ),
+              effectiveMode === 'catalog' ? catalogBody : manualBody,
             ),
             h('div', { className: 'omo-ab-hint' }, t('fixedNote')),
             editError && h('div', { className: 'omo-ab-err', role: 'alert' }, editError),
@@ -675,8 +759,63 @@ window.__ModuleLoader__.load({
       return map;
     }
 
+    /**
+     * Provider choices for the model editor: catalog order, plus a synthetic
+     * first entry when the current value is not advertised by this host. The
+     * override file is shared per DSH_HOME across profiles, so a route
+     * registered elsewhere must stay visible (and saveable) here.
+     */
+    function providerOptions(catalog, currentProvider) {
+      const options = [];
+      const providers = Array.isArray(catalog?.providers) ? catalog.providers : [];
+      for (const provider of providers) {
+        if (provider === null || typeof provider !== 'object' || typeof provider.id !== 'string' || provider.id.length === 0) continue;
+        options.push({
+          value: provider.id,
+          label: provider.id,
+          synthetic: false,
+          failure: typeof provider.failure === 'string',
+          ...(typeof provider.name === 'string' && provider.name.length > 0 && provider.name !== provider.id ? { title: provider.name } : {}),
+        });
+      }
+      if (typeof currentProvider === 'string' && currentProvider.length > 0 && !options.some((option) => option.value === currentProvider)) {
+        options.unshift({ value: currentProvider, label: currentProvider, synthetic: true, failure: false });
+      }
+      return options;
+    }
+
+    /**
+     * Model choices for one provider under the same synthetic rule. The
+     * official-subagent flag is advisory context from the host (it never
+     * gates saving or omo dispatch) and rides as `officialBlocked`.
+     */
+    function modelOptions(catalog, provider, currentModel) {
+      const options = [];
+      const providerRow = Array.isArray(catalog?.providers)
+        ? catalog.providers.find((row) => row !== null && typeof row === 'object' && row.id === provider)
+        : undefined;
+      const models = Array.isArray(providerRow?.models) ? providerRow.models : [];
+      for (const model of models) {
+        if (model === null || typeof model !== 'object' || typeof model.id !== 'string' || model.id.length === 0) continue;
+        options.push({
+          value: model.id,
+          label: model.id,
+          synthetic: false,
+          officialBlocked: model.officialSubagentAllowed === false,
+          ...(typeof model.name === 'string' && model.name.length > 0 && model.name !== model.id ? { title: model.name } : {}),
+        });
+      }
+      if (typeof currentModel === 'string' && currentModel.length > 0 && !options.some((option) => option.value === currentModel)) {
+        options.unshift({ value: currentModel, label: currentModel, synthetic: true, officialBlocked: false });
+      }
+      return options;
+    }
+
     return {
       inject: ['slots', 'sessions', 'locale', 'remote', 'remote.commands'],
+      // Offline verification seam: pure option builders are exercised by
+      // verify/agent-button-client.test.mjs without a DOM or React runtime.
+      __test: { providerOptions, modelOptions },
       apply(ctx) {
         ctx.effect(() => ctx.locale.register('agentButton', DICT), 'omo-ab: dictionaries');
 
