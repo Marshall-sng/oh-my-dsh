@@ -86,6 +86,8 @@ window.__ModuleLoader__.load({
         modelPlaceholder: '例如 MiniMax-M3.1-Flash',
         modeCatalog: '从目录选择',
         modeManual: '手动输入',
+        catalogTimeout: '目录请求超时（宿主可能未加载 omo-model-settings 行，请重启桌面应用）',
+        catalogNotReady: '客户端尚未就绪，无法读取目录',
         chooseProvider: '请选择 provider',
         chooseModel: '请选择模型',
         catalogNote: '目录来自当前宿主；未列出的路由可切到「手动输入」。',
@@ -137,6 +139,8 @@ window.__ModuleLoader__.load({
         modelPlaceholder: 'e.g. MiniMax-M3.1-Flash',
         modeCatalog: 'Pick from catalog',
         modeManual: 'Type manually',
+        catalogTimeout: 'Catalog request timed out (the Host may not have loaded the omo-model-settings row; restart the desktop app)',
+        catalogNotReady: 'The client is not ready yet, so the catalog cannot be read',
         chooseProvider: 'Choose a provider',
         chooseModel: 'Choose a model',
         catalogNote: 'Catalog from the current host; unlisted routes can be typed manually.',
@@ -251,6 +255,31 @@ select.omo-ab-input { padding-right: 6px; cursor: pointer; }
 select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
 `;
 
+    // A Host that does not expose the omoSeatModels endpoint never answers
+    // the call; the timeout turns that silence into a visible reason instead
+    // of an endless "loading" spinner.
+    const CATALOG_TIMEOUT_MS = 5000;
+
+    /**
+     * Race one promise against a deadline.
+     * @param {Promise<unknown>} promise - the work to await.
+     * @param {number} ms - deadline in milliseconds.
+     * @returns {Promise<unknown>} the settled work, or a TimeoutError.
+     */
+    function withTimeout(promise, ms) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const error = new Error(`remote call timed out after ${String(ms)}ms`);
+          error.name = 'TimeoutError';
+          reject(error);
+        }, ms);
+        promise.then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (error) => { clearTimeout(timer); reject(error); },
+        );
+      });
+    }
+
     // ── shared store (chip ↔ popup live in different slots) ──────────────
     function createStore(initial) {
       let state = initial;
@@ -343,6 +372,8 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
         // registered in another profile is not in this catalog) and because
         // catalog membership is advisory, not the routable set.
         const [routeMode, setRouteMode] = React.useState('catalog');
+        // Why the catalog is unusable ('' | 'timeout' | 'failed' | 'not-ready').
+        const [catalogIssue, setCatalogIssue] = React.useState('');
         const sessionIdRef = React.useRef(undefined);
         const generation = React.useRef(0);
 
@@ -366,17 +397,40 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           } catch { /* keep the previous snapshot */ }
         }, [store]);
 
+        // One catalog request at a time; the ref (not the state) guards
+        // re-entry, so reopening the editor always re-reads the catalog
+        // instead of seeing a stale "ready" from the previous open.
+        const catalogRequest = React.useRef(null);
         const loadCatalog = React.useCallback(async () => {
           const api = ctx.remote.omoSeatModels;
-          if (!store.getSnapshot().modelsReady || !api) return;
-          if (catalogState === 'loading' || catalogState === 'ready') return;
+          if (!store.getSnapshot().modelsReady || !api) {
+            setCatalogIssue('not-ready');
+            setCatalogState('failed');
+            return;
+          }
+          if (catalogRequest.current !== null) return;
+          setCatalogIssue('');
           setCatalogState('loading');
-          try {
-            const value = valueOf(await api.getCatalog({ sessionId: sessionIdRef.current }));
-            if (value) { setCatalog(value); setCatalogState('ready'); }
-            else setCatalogState('failed');
-          } catch { setCatalogState('failed'); }
-        }, [store, catalogState]);
+          const request = withTimeout(
+            api.getCatalog({ sessionId: sessionIdRef.current }),
+            CATALOG_TIMEOUT_MS,
+          )
+            .then((response) => valueOf(response))
+            .then((value) => {
+              if (value) { setCatalog(value); setCatalogState('ready'); }
+              else { setCatalogIssue('failed'); setCatalogState('failed'); }
+            })
+            .catch((error) => {
+              // A Host without the omoSeatModels endpoint never answers; the
+              // timeout turns that silence into a visible reason instead of
+              // an endless spinner.
+              setCatalogIssue(error?.name === 'TimeoutError' ? 'timeout' : 'failed');
+              setCatalogState('failed');
+            })
+            .finally(() => { catalogRequest.current = null; });
+          catalogRequest.current = request;
+          await request;
+        }, [store]);
 
         // Follow the session the main view currently shows (the same
         // main-view retention heuristic the shipped preset picker uses), and
@@ -593,13 +647,15 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           const catalogPending = catalogState === 'loading' || catalogState === 'idle';
           const catalogReady = catalogState === 'ready' && catalog !== null;
           const catalogAvailable = catalogReady && Array.isArray(catalog.providers) && catalog.providers.length > 0;
-          const catalogUnavailable = catalogState === 'failed' || (catalogReady && !catalogAvailable);
-          // A failed or empty catalog forces the hand-entry form; the reason
-          // stays visible instead of silently changing the controls.
+          // 'idle' means no request was ever made (the client half was not
+          // ready); 'failed' means the request failed or timed out. Both
+          // force the hand-entry form with the reason on screen.
+          const catalogUnavailable = catalogState === 'failed' || catalogState === 'idle' || (catalogReady && !catalogAvailable);
           const effectiveMode = catalogUnavailable ? 'manual' : routeMode;
-          const catalogReason = catalogState === 'failed'
-            ? t('catalogFailed')
-            : (catalogReady && !catalogAvailable ? t('catalogEmpty') : '');
+          const catalogReason = catalogIssue === 'timeout' ? t('catalogTimeout')
+            : catalogIssue === 'not-ready' ? t('catalogNotReady')
+              : catalogState === 'failed' ? t('catalogFailed')
+                : (catalogReady && !catalogAvailable ? t('catalogEmpty') : '');
           const providerChoices = providerOptions(catalog, route.provider);
           const modelChoices = modelOptions(catalog, route.provider, route.model);
           // A label wraps the radio and the text (a button may not contain an
@@ -813,9 +869,10 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
 
     return {
       inject: ['slots', 'sessions', 'locale', 'remote', 'remote.commands'],
-      // Offline verification seam: pure option builders are exercised by
-      // verify/agent-button-client.test.mjs without a DOM or React runtime.
-      __test: { providerOptions, modelOptions },
+      // Offline verification seam: pure option builders and the deadline
+      // helper are exercised by verify/agent-button-client.test.mjs without a
+      // DOM or React runtime.
+      __test: { providerOptions, modelOptions, withTimeout },
       apply(ctx) {
         ctx.effect(() => ctx.locale.register('agentButton', DICT), 'omo-ab: dictionaries');
 
