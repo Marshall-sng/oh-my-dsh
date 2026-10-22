@@ -15,9 +15,46 @@
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { TYPERT } from './typert.host.js';
 import { loadSeatSnapshot, saveOverride } from '../../dispatch/lib/seat-models.js';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export const inject = ['typert', 'llm', 'sessionProjections'];
 export const name = 'omo-model-settings';
+
+/**
+ * Where the Host records what this plugin did, so a support run can tell
+ * "the row never loaded" from "the row loaded but the endpoint is not live"
+ * without attaching a debugger.
+ */
+const STATUS_FILE = () => join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'omo', 'omo-seat-models.status.json');
+
+/**
+ * Merge a patch into the status file. Diagnostics must never break the
+ * Host, so every failure here is swallowed.
+ * @param {object} ctx - the Host context.
+ * @param {object} patch - the fields to record.
+ */
+function writeStatus(ctx, patch) {
+  try {
+    const path = STATUS_FILE();
+    mkdirSync(dirname(path), { recursive: true });
+    let current = {};
+    if (existsSync(path)) {
+      try { current = JSON.parse(readFileSync(path, 'utf8')); } catch { current = {}; }
+    }
+    const live = ctx.typert?.local?.list?.() ?? [];
+    const next = {
+      ...current,
+      ...patch,
+      liveEndpoints: live
+        .filter((descriptor) => descriptor?.namespace === 'omoSeatModels')
+        .map((descriptor) => `${descriptor.namespace}/${descriptor.method}`),
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch { /* a status file is never worth an exception */ }
+}
 
 /** Advisory copy for the catalog: the official policy is context, not a gate. */
 const CATALOG_NOTE = 'officialSubagentAllowed reflects the current session’s captured official subagent policy; it never gates omo dispatch or saving.';
@@ -57,6 +94,7 @@ export class OmoSeatModelsController extends TypertRemoteService {
   async getCatalog(request, signal) {
     const llm = this.ctx.get('llm');
     if (llm === undefined) {
+      writeStatus(this.ctx, { lastCatalog: { at: new Date().toISOString(), error: 'the llm service is unavailable' } });
       throw new RemoteError('gateway/internal', 'the llm service is unavailable, so no model catalog can be listed', {});
     }
     const policy = officialSubagentPolicy(this.ctx, request?.sessionId);
@@ -88,6 +126,16 @@ export class OmoSeatModelsController extends TypertRemoteService {
         ...(failure === undefined ? {} : { failure }),
       });
     }
+    writeStatus(this.ctx, {
+      lastCatalog: {
+        at: new Date().toISOString(),
+        providers: entries.map((entry) => ({
+          id: entry.id,
+          models: entry.models.length,
+          ...(entry.failure === undefined ? {} : { failure: entry.failure }),
+        })),
+      },
+    });
     return { protocolVersion: 1, providers: entries, note: CATALOG_NOTE };
   }
 
@@ -133,10 +181,31 @@ markRemoteMethod(OmoSeatModelsController.prototype, 'getCatalog');
 markRemoteMethod(OmoSeatModelsController.prototype, 'update');
 
 export function apply(ctx) {
-  new OmoSeatModelsController(ctx);
-  // The registration effect rides this plugin's fiber: unloading the row
-  // unregisters the contribution.
-  ctx.typert.register(TYPERT);
+  const status = {
+    plugin: 'omo-model-settings',
+    appliedAt: new Date().toISOString(),
+    registered: false,
+    endpoints: TYPERT.invocations.map((entry) => `${entry.namespace}/${entry.method}`),
+  };
+  try {
+    new OmoSeatModelsController(ctx);
+    // The registration effect rides this plugin's fiber: unloading the row
+    // unregisters the contribution.
+    ctx.typert.register(TYPERT);
+    status.registered = true;
+  } catch (error) {
+    // A failed registration must not take the whole row down: the service
+    // itself is already registered, and the Gateway's source-mode discovery
+    // can still expose the endpoints.
+    status.error = String(error?.message ?? error);
+    ctx.logger?.error?.('omo-model-settings: registration failed: %s', status.error);
+  }
+  writeStatus(ctx, status);
+  // The registry commits inside an effect, so the live endpoint list is only
+  // known after the commit; record it when it happens.
+  try {
+    ctx.typert?.local?.subscribe?.(() => writeStatus(ctx, {}));
+  } catch { /* diagnostics only */ }
 }
 
 export default apply;

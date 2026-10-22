@@ -117,6 +117,7 @@ export const TYPERT = {
       key: 'omoSeatModels',
       exportName: 'OmoSeatModelsController',
       description: 'omo seat dispatch-default model preferences: read, catalog, and the user override file.',
+      tags: [],
       members: [],
       types: [],
     }],

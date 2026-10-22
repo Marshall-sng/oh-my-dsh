@@ -8,7 +8,6 @@
   "exports": {
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
-    "./typert": "./model-settings/lib/typert.host.js",
     "./remote": "./model-settings/lib/typert.client.js",
     "./package.json": "./package.json"
   },

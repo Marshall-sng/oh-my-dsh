@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
         modeManual: '手动输入',
         catalogTimeout: '目录请求超时（宿主可能未加载 omo-model-settings 行，请重启桌面应用）',
         catalogNotReady: '客户端尚未就绪，无法读取目录',
+        catalogRetry: '重试读取目录',
         chooseProvider: '请选择 provider',
         chooseModel: '请选择模型',
         catalogNote: '目录来自当前宿主；未列出的路由可切到「手动输入」。',
@@ -141,6 +142,7 @@ window.__ModuleLoader__.load({
         modeManual: 'Type manually',
         catalogTimeout: 'Catalog request timed out (the Host may not have loaded the omo-model-settings row; restart the desktop app)',
         catalogNotReady: 'The client is not ready yet, so the catalog cannot be read',
+        catalogRetry: 'Retry catalog',
         chooseProvider: 'Choose a provider',
         chooseModel: 'Choose a model',
         catalogNote: 'Catalog from the current host; unlisted routes can be typed manually.',
@@ -203,6 +205,7 @@ window.__ModuleLoader__.load({
 .omo-ab-desc { color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .omo-ab-badge { font-size: 10px; color: var(--dsw-alias-label-secondary); flex: none; }
 .omo-ab-err { padding: 6px 8px 2px; font-size: 11px; color: var(--dsw-alias-state-error-primary); white-space: pre-wrap; }
+.omo-ab-detail { opacity: 0.85; font-family: var(--dsw-alias-font-family-mono, monospace); }
 .omo-ab-hint { padding: 5px 8px 3px; font-size: 10px; color: var(--dsw-alias-label-secondary); }
 .omo-ab-rowwrap { display: flex; align-items: flex-start; gap: 4px; }
 .omo-ab-rowwrap .omo-ab-row { flex: 1; min-width: 0; }
@@ -374,6 +377,8 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
         const [routeMode, setRouteMode] = React.useState('catalog');
         // Why the catalog is unusable ('' | 'timeout' | 'failed' | 'not-ready').
         const [catalogIssue, setCatalogIssue] = React.useState('');
+        // A short, human-readable trace of the last catalog attempt.
+        const [catalogDetail, setCatalogDetail] = React.useState('');
         const sessionIdRef = React.useRef(undefined);
         const generation = React.useRef(0);
 
@@ -405,27 +410,43 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           const api = ctx.remote.omoSeatModels;
           if (!store.getSnapshot().modelsReady || !api) {
             setCatalogIssue('not-ready');
+            setCatalogDetail(api ? 'client not ready' : 'remote.omoSeatModels is not mounted');
             setCatalogState('failed');
             return;
           }
           if (catalogRequest.current !== null) return;
           setCatalogIssue('');
+          setCatalogDetail('requesting…');
           setCatalogState('loading');
           const request = withTimeout(
             api.getCatalog({ sessionId: sessionIdRef.current }),
             CATALOG_TIMEOUT_MS,
           )
-            .then((response) => valueOf(response))
+            .then((response) => {
+              const value = valueOf(response);
+              if (value) {
+                setCatalogDetail(`ok: ${String(Array.isArray(value.providers) ? value.providers.length : 0)} provider(s)`);
+                return value;
+              }
+              setCatalogDetail(`unexpected response: ${JSON.stringify(response).slice(0, 160)}`);
+              throw new Error('unexpected catalog response');
+            })
             .then((value) => {
-              if (value) { setCatalog(value); setCatalogState('ready'); }
-              else { setCatalogIssue('failed'); setCatalogState('failed'); }
+              setCatalog(value);
+              setCatalogState('ready');
             })
             .catch((error) => {
               // A Host without the omoSeatModels endpoint never answers; the
               // timeout turns that silence into a visible reason instead of
               // an endless spinner.
-              setCatalogIssue(error?.name === 'TimeoutError' ? 'timeout' : 'failed');
+              const isTimeout = error?.name === 'TimeoutError';
+              setCatalogIssue(isTimeout ? 'timeout' : 'failed');
+              setCatalogDetail(isTimeout
+                ? `no answer after ${String(CATALOG_TIMEOUT_MS)}ms`
+                : String(error?.message ?? error).slice(0, 200));
               setCatalogState('failed');
+              // eslint-disable-next-line no-console
+              console.warn('[omo-agent-button] catalog unavailable:', isTimeout ? 'timeout' : String(error?.message ?? error));
             })
             .finally(() => { catalogRequest.current = null; });
           catalogRequest.current = request;
@@ -648,10 +669,8 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           const catalogReady = catalogState === 'ready' && catalog !== null;
           const catalogAvailable = catalogReady && Array.isArray(catalog.providers) && catalog.providers.length > 0;
           // 'idle' means no request was ever made (the client half was not
-          // ready); 'failed' means the request failed or timed out. Both
-          // force the hand-entry form with the reason on screen.
+          // ready); 'failed' means the request failed or timed out.
           const catalogUnavailable = catalogState === 'failed' || catalogState === 'idle' || (catalogReady && !catalogAvailable);
-          const effectiveMode = catalogUnavailable ? 'manual' : routeMode;
           const catalogReason = catalogIssue === 'timeout' ? t('catalogTimeout')
             : catalogIssue === 'not-ready' ? t('catalogNotReady')
               : catalogState === 'failed' ? t('catalogFailed')
@@ -677,13 +696,20 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
             // model unselected so the save validation names the missing half.
             setRoute({ provider: value, model: models.length === 1 ? models[0].id : '' });
           };
-          const modeButton = (mode, label, disabled) => h('button', {
+          // Both modes stay selectable: an unusable catalog must not lock the
+          // user out of the dropdown, it must explain itself and offer a
+          // retry. The pressed state follows the user's choice.
+          const modeButton = (mode, label) => h('button', {
             key: mode,
             type: 'button',
             className: 'omo-ab-mode',
-            'aria-pressed': effectiveMode === mode,
-            disabled,
-            onClick: () => setRouteMode(mode),
+            'aria-pressed': routeMode === mode,
+            onClick: () => {
+              setRouteMode(mode);
+              // Re-entering the catalog mode while it is unusable retries the
+              // request (the ref guard keeps it to one in-flight call).
+              if (mode === 'catalog' && catalogUnavailable) void loadCatalog();
+            },
           }, label);
           const catalogBody = h('div', { className: 'omo-ab-field' },
             h('span', { className: 'omo-ab-choicedesc' }, t('providerLabel')),
@@ -691,7 +717,7 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
               className: 'omo-ab-input',
               'aria-label': t('providerLabel'),
               value: route.provider,
-              disabled: catalogPending,
+              disabled: catalogPending || !catalogAvailable,
               onChange: (e) => onProviderChange(e.target.value),
             },
               h('option', { value: '', disabled: true }, t('chooseProvider')),
@@ -706,7 +732,7 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
               className: 'omo-ab-input',
               'aria-label': t('modelLabel'),
               value: route.model,
-              disabled: catalogPending,
+              disabled: catalogPending || !catalogAvailable,
               onChange: (e) => setRoute({ ...route, model: e.target.value }),
             },
               h('option', { value: '', disabled: true }, t('chooseModel')),
@@ -717,6 +743,16 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
               }, `${option.label}${option.synthetic ? t('unlistedSuffix') : ''}${option.officialBlocked ? t('officialBlockedSuffix') : ''}`)),
             ),
             h('span', { className: 'omo-ab-choicedesc' }, catalogPending ? t('catalogLoading') : t('catalogNote')),
+            catalogReason !== '' && h('div', { className: 'omo-ab-err', role: 'alert' },
+              catalogReason,
+              catalogDetail !== '' && h('span', { className: 'omo-ab-detail' }, ` (${catalogDetail})`),
+            ),
+            catalogReason !== '' && h('div', null, h('button', {
+              type: 'button',
+              className: 'omo-ab-edit',
+              disabled: catalogPending,
+              onClick: () => { void loadCatalog(); },
+            }, t('catalogRetry'))),
           );
           const manualBody = h('div', { className: 'omo-ab-field' },
             h('span', { className: 'omo-ab-choicedesc' }, t('providerLabel')),
@@ -734,18 +770,17 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
               onChange: (e) => setRoute({ ...route, model: e.target.value }),
             }),
             catalogReason !== '' && h('span', { className: 'omo-ab-choicedesc' }, catalogReason),
-          );
-          return h('div', { className: 'omo-ab-popup', style: { position: 'fixed', zIndex: 61, ...position } },
+          );          return h('div', { className: 'omo-ab-popup', style: { position: 'fixed', zIndex: 61, ...position } },
             h('div', { className: 'omo-ab-title' }, `${seatLabel} · ${t('editTitle')}`),
             choiceRow('default', t('choiceDefault'), `${t('choiceDefaultDesc')}（${definitionText}）`),
             choiceRow('inherit', t('choiceInherit'), t('choiceInheritDesc')),
             choiceRow('specify', t('choiceSpecify'), t('choiceSpecifyDesc')),
             choice === 'specify' && h('div', null,
               h('div', { className: 'omo-ab-modes' },
-                modeButton('catalog', t('modeCatalog'), catalogUnavailable),
-                modeButton('manual', t('modeManual'), false),
+                modeButton('catalog', t('modeCatalog')),
+                modeButton('manual', t('modeManual')),
               ),
-              effectiveMode === 'catalog' ? catalogBody : manualBody,
+              routeMode === 'catalog' ? catalogBody : manualBody,
             ),
             h('div', { className: 'omo-ab-hint' }, t('fixedNote')),
             editError && h('div', { className: 'omo-ab-err', role: 'alert' }, editError),
