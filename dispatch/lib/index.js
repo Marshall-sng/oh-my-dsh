@@ -94,30 +94,16 @@ const SEAT_STATE_SCHEMA = z.object({
 });
 const SEAT_VIEW_SCHEMA = z.object({ seats: SEAT_SCHEMA, current: z.string() });
 
-export function apply(ctx) {
-  const seats = loadSeats();
-
-  // The seat roster AND the current seat, readable by the client chip through
-  // this session projection. Both ride OFFICIAL events only — the command
-  // lifecycle every `/preset` run writes, plus `agent-preset/selected` — so
-  // the client can re-sync the current seat after a refresh, a session
-  // switch, or a `/preset` typed in the composer. A custom event type is
-  // refused by the official persistence reader and would corrupt the log,
-  // which is why the fold never sees one; the host's own cold-restart
-  // recovery stays in the bundle store (agent/created, below).
-  ctx.sessionProjections.register({
-    key: 'omoSeats',
-    stateSchema: SEAT_STATE_SCHEMA,
-    init: () => ({ seats: rosterView(seats), current: '', pending: {} }),
-    apply: (state, event) => foldSeatState(state, event, seats),
-    wire: {
-      viewSchema: SEAT_VIEW_SCHEMA,
-      view: (state) => ({ seats: state.seats, current: state.current }),
-    },
-    stateVersion: 3,
-  });
-
-  ctx.tools.register(defineTool({
+/** The omo dispatch tool.
+ *
+ *  The output schema is written in the tools service's VALUE schema DSL (the
+ *  same notation the parameter block uses): per-property `required: true`, and
+ *  `defineTool` compiles it into the enforced raw JSON Schema subset.
+ *
+ *  `ctx` is the plugin context: the executor creates the lane through
+ *  `ctx.agents`, so the tool cannot be built without it. */
+export function buildDispatchTool(seats, ctx) {
+  return defineTool({
     name: 'omo_dispatch',
     description: [
       'Dispatch one omo seat as an isolated lane. The seat owns the lane’s persona,',
@@ -290,7 +276,33 @@ export function apply(ctx) {
 
       return { laneId, seat: args.seat, label };
     },
-  }));
+  });
+}
+
+export function apply(ctx) {
+  const seats = loadSeats();
+
+  // The seat roster AND the current seat, readable by the client chip through
+  // this session projection. Both ride OFFICIAL events only — the command
+  // lifecycle every `/preset` run writes, plus `agent-preset/selected` — so
+  // the client can re-sync the current seat after a refresh, a session
+  // switch, or a `/preset` typed in the composer. A custom event type is
+  // refused by the official persistence reader and would corrupt the log,
+  // which is why the fold never sees one; the host's own cold-restart
+  // recovery stays in the bundle store (agent/created, below).
+  ctx.sessionProjections.register({
+    key: 'omoSeats',
+    stateSchema: SEAT_STATE_SCHEMA,
+    init: () => ({ seats: rosterView(seats), current: '', pending: {} }),
+    apply: (state, event) => foldSeatState(state, event, seats),
+    wire: {
+      viewSchema: SEAT_VIEW_SCHEMA,
+      view: (state) => ({ seats: state.seats, current: state.current }),
+    },
+    stateVersion: 3,
+  });
+
+  ctx.tools.register(buildDispatchTool(seats, ctx));
 
   // ── session seat runtime ───────────────────────────────────────────────
   // Seat state lives in the bundle's own store, never in the session log: a
