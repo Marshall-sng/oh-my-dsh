@@ -43,7 +43,7 @@ function writeStatus(ctx, patch) {
     if (existsSync(path)) {
       try { current = JSON.parse(readFileSync(path, 'utf8')); } catch { current = {}; }
     }
-    const live = ctx.typert?.local?.list?.() ?? [];
+    const live = ctx.get('typert')?.local?.list?.() ?? [];
     const next = {
       ...current,
       ...patch,
@@ -204,8 +204,6 @@ export function apply(ctx) {
   // The registry commits inside an effect, so the live endpoint list is only
   // known after the commit; record it when it happens.
   try {
-    ctx.typert?.local?.subscribe?.(() => writeStatus(ctx, {}));
+    ctx.get('typert')?.local?.subscribe?.(() => writeStatus(ctx, {}));
   } catch { /* diagnostics only */ }
 }
-
-export default apply;

@@ -389,15 +389,22 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           return value && value.protocolVersion === 1 ? value : undefined;
         };
 
+        // The wire arguments must survive every transport (HTTP JSON, worker
+        // structured clone, in-process call): an undefined property is not a
+        // JSON value, so the session id is attached only when it exists.
+        const sessionRequest = () => (typeof sessionIdRef.current === 'string' && sessionIdRef.current.length > 0
+          ? { sessionId: sessionIdRef.current }
+          : {});
+
         // Re-read the merged per-seat snapshot. Late responses are dropped by
         // generation so a slow read can never overwrite a fresher context
         // (design §5.2); a read failure just keeps the previous snapshot.
         const refreshModels = React.useCallback(async () => {
-          const api = ctx.remote.omoSeatModels;
+          const api = ctx.get('remote.omoSeatModels');
           if (!store.getSnapshot().modelsReady || !api) return;
           const gen = ++generation.current;
           try {
-            const value = valueOf(await api.getState({ sessionId: sessionIdRef.current }));
+            const value = valueOf(await api.getState(sessionRequest()));
             if (gen === generation.current && value) setModels(bySeat(value.seats));
           } catch { /* keep the previous snapshot */ }
         }, [store]);
@@ -407,7 +414,7 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
         // instead of seeing a stale "ready" from the previous open.
         const catalogRequest = React.useRef(null);
         const loadCatalog = React.useCallback(async () => {
-          const api = ctx.remote.omoSeatModels;
+          const api = ctx.get('remote.omoSeatModels');
           if (!store.getSnapshot().modelsReady || !api) {
             setCatalogIssue('not-ready');
             setCatalogDetail(api ? 'client not ready' : 'remote.omoSeatModels is not mounted');
@@ -418,8 +425,11 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           setCatalogIssue('');
           setCatalogDetail('requesting…');
           setCatalogState('loading');
+          // The call is deferred into a promise so that a synchronous throw
+          // from the Remote accessor, and a `{ok:false,error}` reply, both
+          // land in the same catch below and become a visible reason.
           const request = withTimeout(
-            api.getCatalog({ sessionId: sessionIdRef.current }),
+            Promise.resolve().then(() => api.getCatalog(sessionRequest())),
             CATALOG_TIMEOUT_MS,
           )
             .then((response) => {
@@ -428,8 +438,10 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
                 setCatalogDetail(`ok: ${String(Array.isArray(value.providers) ? value.providers.length : 0)} provider(s)`);
                 return value;
               }
-              setCatalogDetail(`unexpected response: ${JSON.stringify(response).slice(0, 160)}`);
-              throw new Error('unexpected catalog response');
+              const detail = response?.error?.message
+                ? `${response.error.code ?? 'error'}: ${response.error.message}`
+                : `unexpected response: ${JSON.stringify(response).slice(0, 160)}`;
+              throw new Error(detail);
             })
             .then((value) => {
               setCatalog(value);
@@ -561,6 +573,8 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           setEditing(seatId);
           setEditError('');
           setCatalog(null);
+          setCatalogIssue('');
+          setCatalogDetail('');
           setCatalogState('idle');
           // Start from the catalog; a failed/empty catalog falls back to the
           // hand-entry form inside the render (the mode is derived there).
@@ -583,7 +597,12 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           setSaving(true);
           setEditError('');
           try {
-            const api = ctx.remote.omoSeatModels;
+            const api = ctx.get('remote.omoSeatModels');
+            if (!api) {
+              setEditError(t('failed') + 'remote unavailable');
+              setSaving(false);
+              return;
+            }
             let request;
             if (choice === 'specify') {
               const provider = route.provider.trim();
@@ -665,14 +684,14 @@ select.omo-ab-input:disabled { cursor: default; opacity: 0.6; }
           const definitionText = setting?.definitionModel
             ? `${setting.definitionModel.provider}/${setting.definitionModel.model}`
             : t('inheritLabel');
-          const catalogPending = catalogState === 'loading' || catalogState === 'idle';
+          // 'idle' means no request is in flight; 'failed' means the request
+          // failed or timed out.
+          const catalogPending = catalogState === 'loading';
           const catalogReady = catalogState === 'ready' && catalog !== null;
           const catalogAvailable = catalogReady && Array.isArray(catalog.providers) && catalog.providers.length > 0;
-          // 'idle' means no request was ever made (the client half was not
-          // ready); 'failed' means the request failed or timed out.
           const catalogUnavailable = catalogState === 'failed' || catalogState === 'idle' || (catalogReady && !catalogAvailable);
           const catalogReason = catalogIssue === 'timeout' ? t('catalogTimeout')
-            : catalogIssue === 'not-ready' ? t('catalogNotReady')
+            : (catalogIssue === 'not-ready' || catalogState === 'idle') ? t('catalogNotReady')
               : catalogState === 'failed' ? t('catalogFailed')
                 : (catalogReady && !catalogAvailable ? t('catalogEmpty') : '');
           const providerChoices = providerOptions(catalog, route.provider);
