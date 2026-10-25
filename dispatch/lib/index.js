@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { parentAgentOptionsForDelegation, resolveChildAgentOptions, resolveChildDepth } from '@deepseek-ai/dsh-subagent';
+import { childSessionMeta, parentAgentOptionsForDelegation, resolveChildAgentOptions, resolveChildDepth } from '@deepseek-ai/dsh-subagent';
 import { z } from 'zod';
 import { loadSeats, rosterView, applySeat, applySeatToSession, releaseSeat, restoreSeat, forgetSeat, foldSeatState } from './seat-runtime.js';
 import { loadSeatSnapshot, resolveDispatchRoute } from './seat-models.js';
@@ -221,15 +221,25 @@ export function buildDispatchTool(seats, ctx) {
       // cleared on a route change (design §3.3). Passing the resolved route
       // as `requested` is what makes "inherit" mean the parent's LATEST
       // effective route rather than its creation-time one.
+      const childDepth = resolveChildDepth(parent);
       const agentOptions = resolveChildAgentOptions(
         parent,
         route !== undefined ? { provider: route.provider, model: route.model } : undefined,
-        resolveChildDepth(parent),
+        childDepth,
       );
+
+      // The lane is a subagent-origin child session. The official history and
+      // trajectory APIs address a child through its session header
+      // (`origin: 'subagent'` + `parentSession` + the delegation depth), the
+      // same way the official subagent tool creates its children. Without this
+      // meta the lane is invisible to them and the UI reports
+      // "subagent is unavailable (subagent/not-found)".
+      const meta = childSessionMeta(parent, childDepth, false);
 
       const handle = await ctx.agents.create({
         sessionId: laneId,
         parentAgent: parent,
+        meta,
         agentOptions,
         signal: exec.signal,
         setup,
